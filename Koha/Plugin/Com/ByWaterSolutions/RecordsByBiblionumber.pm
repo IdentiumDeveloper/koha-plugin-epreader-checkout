@@ -29,7 +29,18 @@ sub get_auth_header {
     return "Basic $encoded_credentials";
 }
 
+
+use constant ANYONE => 2;
+
+BEGIN {
+    use Config;
+    use C4::Context;
+
+    my $pluginsdir  = C4::Context->config('pluginsdir');
+}
+
 our $VERSION = '1.0.0';
+our $dbh = C4::Context->dbh();
 
 sub new {
     my ($class, $args) = @_;
@@ -40,10 +51,11 @@ sub new {
               description     => 'Plugin to integrate with external API for reader data'
               date_authored   => '2024-04-30',
               date_updated    => "1900-01-01",
-              minimum_version => $MINIMUM_VERSION,
+              minimum_version => '18.11',
               maximum_version => undef,
               version         => $VERSION,
         	},
+        	
         args => $args,
     });
     return $self;
@@ -51,35 +63,64 @@ sub new {
 
 sub install {
     my ($self, $args) = @_;
-    # Perform installation tasks if needed
+
+    # Define the path to the plugin file
+    my $plugin_path = '/var/lib/koha/library/plugins/KohaReaderIntegration/lib/KohaReaderIntegration/Main.pm';
+
+    # Define the cron job command
+    my $cron_command = "*/5 * * * * /usr/bin/perl $plugin_path";
+
+    # Define the cron job file path
+    my $cron_file = '/etc/cron.d/koha_reader_integration';
+
+    # Open the cron job file for writing
+    open my $fh, '>', $cron_file or die "Could not open $cron_file: $!";
+
+    # Write the cron job command
+    print $fh "www-data $cron_command\n";
+
+    # Close the cron job file
+    close $fh;
+
+    # Verify the cron job was set up correctly
+    print "Cron job set up to run $plugin_path every 5 minutes\n";
+
+    return 1;
 }
+
+
 
 sub uninstall {
     my ($self, $args) = @_;
-    # Perform uninstallation tasks if needed
+
+    # Remove cron job
+    my $cron_file = '/etc/cron.d/koha_reader_integration';
+    unlink $cron_file or warn "Could not remove cron job file: $!";
+
+    return 1;
 }
 
 sub get_reader_data {
     my $self = shift;
 
-    # Step 1: Fetch reader data from the external API
+    # Fetch reader data from the external API
     my $http = HTTP::Tiny->new();
     my $response = $http->get('http://192.168.1.29:5000/api/readers');
 
     if ($response->{success}) {
-        # Step 2: Parse reader data and extract EP number
+        # Parse reader data and extract EP number
         my $data = decode_json($response->{content});
         my $ep_number = $data->{ep};
 
-        # Step 3: Check if the EP number matches biblioitems.ean in Koha
+        # Check if the EP number matches biblioitems.ean in Koha
         my $book = $self->find_book_by_ean($ep_number);
 
         if ($book) {
-            # Step 4: Perform checkout if book is found
+            # Perform checkout if the book is found
             my $checkout_success = $self->checkout_book($book);
 
             if ($checkout_success) {
-                # Step 5: Display book details
+                # Display book details
                 $self->display_book_details($book);
             } else {
                 warn "Failed to check out the book with EP number: $ep_number";
@@ -92,6 +133,7 @@ sub get_reader_data {
         warn "Failed to fetch reader data: " . $response->{status};
     }
 }
+
 
 sub find_book_by_ean {
     my ($self, $ep_number) = @_;
