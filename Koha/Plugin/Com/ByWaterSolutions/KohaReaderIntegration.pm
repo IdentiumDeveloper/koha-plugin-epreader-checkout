@@ -1,214 +1,112 @@
-package KohaReaderIntegration::Main;
+package Koha::Plugin::Com::ByWaterSolutions::RecordsByBiblionumber;
 
+## It's good practive to use Modern::Perl
 use Modern::Perl;
 
-use utf8;
-use strict;
-use warnings;
+## Required for all plugins
+use base qw(Koha::Plugins::Base);
 
-use C4::Context;
-use C4::Items;
-use C4::Circulation;
-use HTTP::Tiny;
-use JSON;
-use MIME::Base64;
-
+## We will also need to include any Koha libraries we want to access
 use C4::Context;
 use C4::Auth;
 use Koha::Database;
-use C4::Checkout;
 
-use base qw(Koha::Plugins::Base);
+## Here we set our plugin version
+our $VERSION = "{VERSION}";
+our $MINIMUM_VERSION = "{MINIMUM_VERSION}";
 
-my $koha_username = 'Dubey_Roh';
-my $koha_password = 'Rohit@123';
+## Here is our metadata, some keys are required, some are optional
+our $metadata = {
+    name            => 'Records by Biblionumbers',
+    author          => 'Kyle M Hall',
+    description     => 'Enter a list of biblionumbers ( or barcodes ), get a list of titles!',
+    date_authored   => '2014-08-20',
+    date_updated    => "1900-01-01",
+    minimum_version => $MINIMUM_VERSION,
+    maximum_version => undef,
+    version         => $VERSION,
+};
 
-sub get_auth_header {
-    my $credentials = "$koha_username:$koha_password";
-    my $encoded_credentials = encode_base64($credentials, '');
-    return "Basic $encoded_credentials";
-}
-
-
-use constant ANYONE => 2;
-
-BEGIN {
-    use Config;
-    use C4::Context;
-
-    my $pluginsdir  = C4::Context->config('pluginsdir');
-}
-
-our $VERSION = '1.0.0';
-our $dbh = C4::Context->dbh();
-
+## This is the minimum code required for a plugin's 'new' method
+## More can be added, but none should be removed
 sub new {
-    my ($class, $args) = @_;
-    my $self = $class->SUPER::new({
-        metadata => {
-              name            => 'Koha Reader Integration',
-    	      author          => 'Rohit Dubey',
-              description     => 'Plugin to integrate with external API for reader data'
-              date_authored   => '2024-04-30',
-              date_updated    => "1900-01-01",
-              minimum_version => '18.11',
-              maximum_version => undef,
-              version         => $VERSION,
-        	},
-        	
-        args => $args,
-    });
+    my ( $class, $args ) = @_;
+
+    ## We need to add our metadata here so our base class can access it
+    $args->{'metadata'} = $metadata;
+    $args->{'metadata'}->{'class'} = $class;
+
+    ## Here, we call the 'new' method for our base class
+    ## This runs some additional magic and checking
+    ## and returns our actual $self
+    my $self = $class->SUPER::new($args);
+
     return $self;
 }
 
-sub install {
-    my ($self, $args) = @_;
+## The existance of a 'report' subroutine means the plugin is capable
+## of running a report. This example report can output a list of patrons
+## either as HTML or as a CSV file. Technically, you could put all your code
+## in the report method, but that would be a really poor way to write code
+## for all but the simplest reports
+sub report {
+    my ( $self, $args ) = @_;
+    my $cgi = $self->{'cgi'};
 
-    # Define the path to the plugin file
-    my $plugin_path = '/var/lib/koha/library/plugins/KohaReaderIntegration/lib/KohaReaderIntegration/Main.pm';
-
-    # Define the cron job command
-    my $cron_command = "*/5 * * * * /usr/bin/perl $plugin_path";
-
-    # Define the cron job file path
-    my $cron_file = '/etc/cron.d/koha_reader_integration';
-
-    # Open the cron job file for writing
-    open my $fh, '>', $cron_file or die "Could not open $cron_file: $!";
-
-    # Write the cron job command
-    print $fh "www-data $cron_command\n";
-
-    # Close the cron job file
-    close $fh;
-
-    # Verify the cron job was set up correctly
-    print "Cron job set up to run $plugin_path every 5 minutes\n";
-
-    return 1;
-}
-
-
-
-sub uninstall {
-    my ($self, $args) = @_;
-
-    # Remove cron job
-    my $cron_file = '/etc/cron.d/koha_reader_integration';
-    unlink $cron_file or warn "Could not remove cron job file: $!";
-
-    return 1;
-}
-
-sub get_reader_data {
-    my $self = shift;
-
-    # Fetch reader data from the external API
-    my $http = HTTP::Tiny->new();
-    my $response = $http->get('http://192.168.1.29:5000/api/readers');
-
-    if ($response->{success}) {
-        # Parse reader data and extract EP number
-        my $data = decode_json($response->{content});
-        my $ep_number = $data->{ep};
-
-        # Check if the EP number matches biblioitems.ean in Koha
-        my $book = $self->find_book_by_ean($ep_number);
-
-        if ($book) {
-            # Perform checkout if the book is found
-            my $checkout_success = $self->checkout_book($book);
-
-            if ($checkout_success) {
-                # Display book details
-                $self->display_book_details($book);
-            } else {
-                warn "Failed to check out the book with EP number: $ep_number";
-            }
-        } else {
-            warn "No match found: EP number $ep_number does not match any book in Koha";
-        }
-    } else {
-        # Handle the error
-        warn "Failed to fetch reader data: " . $response->{status};
+    unless ( $cgi->param('output') ) {
+        $self->report_step1();
+    }
+    else {
+        $self->report_step2();
     }
 }
 
+## These are helper functions that are specific to this plugin
+## You can manage the control flow of your plugin any
+## way you wish, but I find this is a good approach
+sub report_step1 {
+    my ( $self, $args ) = @_;
+    my $cgi = $self->{'cgi'};
 
-sub find_book_by_ean {
-    my ($self, $ep_number) = @_;
+    my $template = $self->get_template( { file => 'report-step1.tt' } );
 
-    # Use Koha's database schema to search for the book by EP number
+    print $cgi->header();
+    print $template->output();
+}
+
+sub report_step2 {
+    my ( $self, $args ) = @_;
+    my $cgi = $self->{'cgi'};
+
+    my $biblionumbers = $cgi->param('biblionumbers');
+    my $input         = $cgi->param('input') || "biblionumber";
+    my $output        = $cgi->param('output');
+
+    my @numbers = split( /[\n,\r\n,\t,\,]/, $biblionumbers );
+    map { $_ =~ s/^\s+|\s+$//g  } @numbers;
+
     my $schema = Koha::Database->new()->schema();
-    my $book;
 
-    # Search for a book where `biblioitems.ean` matches the given EP number
-    my $result = $schema->resultset('Biblioitem')
-        ->search(
-            { ean => $ep_number },
-            { join => 'biblio', limit => 1 }
-        );
-
-    # Return the first matching book if found
-    if (my $biblioitem = $result->first()) {
-        $book = {
-            id => $biblioitem->biblionumber,
-            title => $biblioitem->biblio->title,
-            author => $biblioitem->biblio->author,
-            ean => $biblioitem->ean,
-        };
-    }
-
-    return $book;
-}
-
-
-sub checkout_book {
-    my ($self, $book) = @_;
-
-    # Use Koha's internal circulation function to perform the checkout
-    my $item_id = $book->{id};
-    
-    # Retrieve the patron ID from the Koha context
-    my $patron_id = C4::Context->userenv->{number};
-    
-    # Retrieve the branch code from the Koha context
-    my $branch_code = C4::Context->userenv->{branch};
-    
-    # Set the due date as needed
-    my $due_date = '2026-05-25';
-    
-    # Variable to capture any error messages
-    my $message;
-    
-    # Perform the checkout using C4::Circulation::AddIssue
-    my $checkout_success = C4::Circulation::AddIssue(
-        { 
-            itemnumber => $item_id,
-            borrowernumber => $patron_id,
-            branch => $branch_code,
-            date_due => $due_date,
-            message => \$message,
-        }
+    my @items = $schema->resultset("Item")->search(
+        { $input   => { -in  => \@numbers } },
+        { order_by => { -asc => 'biblionumber' } }
     );
 
-    # Check if the checkout was successful
-    if ($checkout_success) {
-        return 1; # Checkout successful
-    } else {
-        # If checkout failed, log the error message
-        warn "Failed to checkout book: $message";
-        return 0;
+    my $filename;
+    if ( $output eq "csv" ) {
+        print $cgi->header( -attachment => 'records.csv' );
+        $filename = 'report-step2-csv.tt';
     }
-}
+    else {
+        print $cgi->header();
+        $filename = 'report-step2-html.tt';
+    }
 
+    my $template = $self->get_template( { file => $filename } );
 
-sub display_book_details {
-    my ($self, $book) = @_;
-    
-    print "Book Title: " . $book->{title} . "\n";
-    print "Author: " . $book->{author} . "\n";
-    print "EAN Number: " . $book->{ean} . "\n";
+    $template->param( items => \@items );
+
+    print $template->output();
 }
 
 1;
