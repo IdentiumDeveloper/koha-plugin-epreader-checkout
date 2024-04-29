@@ -1,54 +1,36 @@
 package Koha::Plugin::Com::ByWaterSolutions::RecordsByBiblionumber;
 
-## It's good practive to use Modern::Perl
 use Modern::Perl;
-
-## Required for all plugins
 use base qw(Koha::Plugins::Base);
-
-## We will also need to include any Koha libraries we want to access
-use C4::Context;
-use C4::Auth;
+use HTTP::Tiny;
+use JSON;
 use Koha::Database;
+use C4::Circulation;
 
-## Here we set our plugin version
 our $VERSION = "{VERSION}";
 our $MINIMUM_VERSION = "{MINIMUM_VERSION}";
 
-## Here is our metadata, some keys are required, some are optional
 our $metadata = {
     name            => 'Records by Biblionumbers',
-    author          => 'Kyle M Hall',
-    description     => 'Enter a list of biblionumbers ( or barcodes ), get a list of titles!',
-    date_authored   => '2014-08-20',
-    date_updated    => "1900-01-01",
+    author          => 'Your Name',
+    description     => 'Modified plugin to integrate external API for EP numbers and perform checkout operations.',
+    date_authored   => '2024-04-30',
+    date_updated    => '2024-04-30',
     minimum_version => $MINIMUM_VERSION,
     maximum_version => undef,
     version         => $VERSION,
 };
 
-## This is the minimum code required for a plugin's 'new' method
-## More can be added, but none should be removed
 sub new {
     my ( $class, $args ) = @_;
 
-    ## We need to add our metadata here so our base class can access it
     $args->{'metadata'} = $metadata;
     $args->{'metadata'}->{'class'} = $class;
 
-    ## Here, we call the 'new' method for our base class
-    ## This runs some additional magic and checking
-    ## and returns our actual $self
     my $self = $class->SUPER::new($args);
-
     return $self;
 }
 
-## The existance of a 'report' subroutine means the plugin is capable
-## of running a report. This example report can output a list of patrons
-## either as HTML or as a CSV file. Technically, you could put all your code
-## in the report method, but that would be a really poor way to write code
-## for all but the simplest reports
 sub report {
     my ( $self, $args ) = @_;
     my $cgi = $self->{'cgi'};
@@ -61,13 +43,9 @@ sub report {
     }
 }
 
-## These are helper functions that are specific to this plugin
-## You can manage the control flow of your plugin any
-## way you wish, but I find this is a good approach
 sub report_step1 {
     my ( $self, $args ) = @_;
     my $cgi = $self->{'cgi'};
-
     my $template = $self->get_template( { file => 'report-step1.tt' } );
 
     print $cgi->header();
@@ -77,36 +55,65 @@ sub report_step1 {
 sub report_step2 {
     my ( $self, $args ) = @_;
     my $cgi = $self->{'cgi'};
+    my $http = HTTP::Tiny->new();
 
-    my $biblionumbers = $cgi->param('biblionumbers');
-    my $input         = $cgi->param('input') || "biblionumber";
-    my $output        = $cgi->param('output');
+    # Fetch reader data from external API
+    my $response = $http->get('http://192.168.1.29:5000/api/readers');
+    my $data = decode_json($response->{content});
 
-    my @numbers = split( /[\n,\r\n,\t,\,]/, $biblionumbers );
-    map { $_ =~ s/^\s+|\s+$//g  } @numbers;
+    # Extract EP numbers from API response
+    my @ep_numbers = map { $_->{ep} } @{ $data->{data} };
 
+    # Initialize Koha schema
     my $schema = Koha::Database->new()->schema();
 
-    my @items = $schema->resultset("Item")->search(
-        { $input   => { -in  => \@numbers } },
-        { order_by => { -asc => 'biblionumber' } }
+    # Search for matching EP numbers in Koha
+    foreach my $ep_number (@ep_numbers) {
+        my $book = $schema->resultset('Biblioitem')->search(
+            { ean => $ep_number },
+            { join => 'biblio', limit => 1 }
+        )->first();
+
+        if ($book) {
+            # Perform checkout operation
+            my $checkout_success = $self->checkout_book($book);
+
+            if ($checkout_success) {
+                $self->display_book_details($book);
+            } else {
+                warn "Failed to check out book with EP number: $ep_number";
+            }
+        } else {
+            warn "No match found: EP number $ep_number does not match any book in Koha";
+        }
+    }
+}
+
+sub checkout_book {
+    my ( $self, $book ) = @_;
+    my $item_id = $book->{id};
+    my $patron_id = C4::Context->userenv->{number};
+    my $branch_code = C4::Context->userenv->{branch};
+    my $due_date = '2026-05-30';
+
+    # Perform checkout using Koha's internal circulation function
+    my $checkout_success = C4::Circulation::AddIssue(
+        { 
+            itemnumber => $item_id,
+            borrowernumber => $patron_id,
+            branch => $branch_code,
+            date_due => $due_date,
+        }
     );
 
-    my $filename;
-    if ( $output eq "csv" ) {
-        print $cgi->header( -attachment => 'records.csv' );
-        $filename = 'report-step2-csv.tt';
-    }
-    else {
-        print $cgi->header();
-        $filename = 'report-step2-html.tt';
-    }
+    return $checkout_success;
+}
 
-    my $template = $self->get_template( { file => $filename } );
-
-    $template->param( items => \@items );
-
-    print $template->output();
+sub display_book_details {
+    my ( $self, $book ) = @_;
+    print "Book Title: " . $book->{title} . "\n";
+    print "Author: " . $book->{author} . "\n";
+    print "EAN Number: " . $book->{ean} . "\n";
 }
 
 1;
