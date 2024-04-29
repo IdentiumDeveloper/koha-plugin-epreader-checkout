@@ -12,7 +12,7 @@ our $MINIMUM_VERSION = "{MINIMUM_VERSION}";
 
 our $metadata = {
     name            => 'Records by Biblionumbers',
-    author          => 'Your Name',
+    author          => 'Rohit Dubey',
     description     => 'Modified plugin to integrate external API for EP numbers and perform checkout operations.',
     date_authored   => '2024-04-30',
     date_updated    => '2024-04-30',
